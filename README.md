@@ -61,7 +61,7 @@ PUT은 Content-Type: application/json이 필요합니다. API_TOKEN 설정 시 A
 }
 ```
 
-음표는 { id, pitch, step, length, velocity }입니다. UUID ID, MIDI pitch 60–72, step 0–127, 양의 정수 length, velocity 0.01–1을 허용합니다. 음표 최대 512개, BPM 40–240, 8마디입니다. recording은 null 또는 { dataUrl, duration, offset }이며 오디오 data URL, 초 단위 길이(최대 120초)와 시작 보정(-5~48초)을 저장합니다. 클라이언트 녹음 한도는 20 MB이며 API 요청은 base64 포함 최대 30 MiB입니다.
+음표는 { id, pitch, step, length, velocity }입니다. UUID ID, MIDI pitch 60–84, step 0–127, 양의 정수 length, velocity 0.01–1을 허용합니다. 음표 최대 512개, BPM 40–240, 8마디입니다. recording은 null 또는 { dataUrl, duration, offset }이며 오디오 data URL, 초 단위 길이(최대 120초)와 시작 보정(-5~48초)을 저장합니다. 클라이언트 녹음 한도는 20 MB이며 API 요청은 base64 포함 최대 30 MiB입니다.
 
 ## 저장 및 검증
 
@@ -74,3 +74,15 @@ npm test
 테스트는 임시 디렉터리와 임의의 루프백 포트로 CRUD, 영속 파일, CORS, 인증, 입력 검증, 경로 조작과 크기 제한을 확인합니다.
 
 프론트엔드: https://github.com/solchaan/mumak-front
+
+
+## 오선지 확장 필드
+
+프로젝트 v1은 선택적 chords 배열과 음표의 선택적 spelling 필드를 지원합니다. 기존 파일에 chords가 없으면 빈 배열로 처리합니다.
+
+- spelling: 실제 MIDI 음높이와 일치하는 음이름, 예: Bb4, F#5, Bbb4. 겹임시표까지 허용합니다.
+- chords: { id, symbol, step, length, noteIds } 배열. 각 코드가 참조하는 음표는 실제 구성음, 시작 위치와 길이가 일치해야 합니다.
+- 같은 시작 위치의 중복 코드, 중복 ID, 여러 코드의 같은 음표 참조, 존재하지 않는 음표 참조와 잘못된 음이름은 거부합니다.
+- 지원 코드: 메이저, m, 7, maj7, m7, dim, dim7, m7b5, aug, sus2, sus4, 6, m6. 세 겹 임시표가 필요한 Cbdim7/B#aug는 지원하지 않습니다.
+
+필드가 없는 기존 프로젝트의 읽기는 유지되며, 새 코드 데이터를 저장할 때는 프론트와 백엔드를 함께 업데이트해야 합니다.

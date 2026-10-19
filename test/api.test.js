@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { createApp } from '../src/app.js';
 import { validateProject } from '../src/project.js';
+import { chordPitches } from '../src/notation.js';
 
 function fixture() {
   return { version: 1, id: randomUUID(), title: '테스트 스케치', bpm: 96, bars: 8, instrument: 'soft', notes: [{ id: randomUUID(), pitch: 60, step: 0, length: 4, velocity: .8 }], drums: { kick: [0, 8], snare: [4], hat: [2] }, mixer: { keys: { volume: .7, mute: false }, drums: { volume: .5, mute: false }, voice: { volume: .8, mute: false } }, recording: null, updatedAt: new Date().toISOString() };
@@ -59,4 +60,20 @@ test('project validator enforces timing, note IDs, mixer and audio data constrai
     { ...p, recording: { dataUrl: 'https://example.com/private', offset: 0, duration: 2 } },
     { ...p, mixer: { ...p.mixer, keys: { volume: 9, mute: false } } },
   ]) assert.throws(() => validateProject(invalid));
+});
+
+test('staff chords and enharmonic spellings survive API persistence', async t => {
+  const { request } = await setup(t); const p = fixture();
+  const spellings = ['Bb4', 'D5', 'F5', 'A5'];
+  p.notes = chordPitches('Bbmaj7').map((pitch, i) => ({ id: randomUUID(), pitch, spelling: spellings[i], step: 16, length: 8, velocity: .7 }));
+  p.chords = [{ id: randomUUID(), symbol: 'Bbmaj7', step: 16, length: 8, noteIds: p.notes.map(n => n.id) }];
+  assert.equal((await request(`/projects/${p.id}`, put(p))).status, 200);
+  const loaded = await (await request(`/projects/${p.id}`)).json();
+  assert.deepEqual(loaded.notes, p.notes); assert.deepEqual(loaded.chords, p.chords);
+  const bad = { ...p, chords: [{ ...p.chords[0], symbol: 'G7' }] };
+  assert.equal((await request(`/projects/${p.id}`, put(bad))).status, 400);
+  assert.throws(() => validateProject({ ...p, notes: p.notes.map(n => ({ ...n, spelling: 'C4' })) }));
+  assert.throws(() => validateProject({ ...p, chords: [{ ...p.chords[0], noteIds: [randomUUID()] }] }));
+  assert.deepEqual(validateProject(fixture()).chords, []);
+  assert.equal(chordPitches('B#aug'), null);
 });
