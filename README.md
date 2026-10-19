@@ -36,8 +36,9 @@ npm run dev
 | GET | /api/projects/:id | 전체 프로젝트 |
 | PUT | /api/projects/:id | 생성 또는 교체, id와 updatedAt |
 | DELETE | /api/projects/:id | 삭제, 204 |
+| POST | /api/harmony/suggest | 조성 추정과 다음 코드·코드 진행 추천 |
 
-PUT은 Content-Type: application/json이 필요합니다. API_TOKEN 설정 시 Authorization: Bearer <token>을 보내세요. 업데이트 시 서버가 updatedAt을 생성합니다. 동시 편집은 마지막 저장이 우선합니다.
+PUT과 POST는 Content-Type: application/json이 필요합니다. API_TOKEN 설정 시 Authorization: Bearer <token>을 보내세요. 업데이트 시 서버가 updatedAt을 생성합니다. 동시 편집은 마지막 저장이 우선합니다.
 
 프로젝트 형식 v1:
 
@@ -81,8 +82,47 @@ npm test
 프로젝트 v1은 선택적 chords 배열과 음표의 선택적 spelling 필드를 지원합니다. 기존 파일에 chords가 없으면 빈 배열로 처리합니다.
 
 - spelling: 실제 MIDI 음높이와 일치하는 음이름, 예: Bb4, F#5, Bbb4. 겹임시표까지 허용합니다.
-- chords: { id, symbol, step, length, noteIds } 배열. 각 코드가 참조하는 음표는 실제 구성음, 시작 위치와 길이가 일치해야 합니다.
-- 같은 시작 위치의 중복 코드, 중복 ID, 여러 코드의 같은 음표 참조, 존재하지 않는 음표 참조와 잘못된 음이름은 거부합니다.
+- chords: { id, symbol, step, length } 배열. 리드시트 방식의 코드 기호로, 구성음은 음표로 저장하지 않고 클라이언트가 재생·내보내기 때 기호로부터 만듭니다. 위치순으로 정렬해 저장합니다.
+- 같은 시작 위치의 중복 코드, 중복 ID, 지원하지 않는 기호와 잘못된 음이름은 거부합니다. 이전 클라이언트가 보내던 noteIds 필드는 문자열 배열이면 받아들이되 저장하지 않습니다.
 - 지원 코드: 메이저, m, 7, maj7, m7, dim, dim7, m7b5, aug, sus2, sus4, 6, m6. 세 겹 임시표가 필요한 Cbdim7/B#aug는 지원하지 않습니다.
+- accompaniment: { pattern } 코드 반주 패턴. pattern은 quarter(4비트, 기본값), half, eighth, whole 중 하나입니다. 필드가 없으면 quarter로 저장합니다. 반주 음표 자체는 클라이언트가 코드 기호에서 생성하므로 저장하지 않습니다.
+- key: null 또는 { tonic, mode } 조표. mode는 major 또는 minor이며 tonic은 정해진 표기만 허용합니다. 장조: C, Db, D, Eb, E, F, Gb, G, Ab, A, Bb, B. 단조: C, C#, D, Eb, E, F, F#, G, G#, A, Bb, B. 필드가 없으면 null로 저장합니다. 조표가 있으면 코드 추천은 조성 추정 대신 이 값을 사용합니다.
 
 필드가 없는 기존 프로젝트의 읽기는 유지되며, 새 코드 데이터를 저장할 때는 프론트와 백엔드를 함께 업데이트해야 합니다.
+
+## 코드 진행 추천
+
+POST /api/harmony/suggest는 외부 서비스 없이 규칙 기반으로 다음 코드를 추천합니다. 요청은 저장과 무관하며 프로젝트를 읽거나 쓰지 않습니다. 본문 한도는 1 MiB입니다.
+
+요청 본문(모든 필드 선택):
+
+```json
+{
+  "step": 16, "length": 16, "limit": 6,
+  "notes": [{ "id": "…", "pitch": 64, "step": 16, "length": 8, "velocity": 0.7 }],
+  "chords": [{ "symbol": "G7", "step": 0, "length": 16, "noteIds": ["…"] }],
+  "key": { "tonic": "C", "mode": "major" }
+}
+```
+
+- step·length: 추천할 코드의 시작 위치와 길이(16분음표 칸). 기본값은 0과 16입니다.
+- notes·chords: 현재 스케치의 음표와 코드. 녹음 데이터는 보내지 않습니다.
+- key: 지정하면 조성 추정을 건너뜁니다. tonic은 C, Db/C#, …, B, mode는 major 또는 minor입니다.
+
+응답:
+
+```json
+{
+  "key": { "tonic": "C", "mode": "major", "label": "C 장조", "confidence": 0.84, "estimated": true },
+  "position": { "step": 16, "length": 16 },
+  "previous": { "symbol": "G7", "roman": "V" },
+  "suggestions": [{ "symbol": "C", "roman": "I", "score": 1.8, "reason": "V → I 진행 · 멜로디 음 1개 포함" }],
+  "progressions": [{ "name": "I–V–vi–IV", "symbols": ["C", "G", "Am", "F"], "chords": [{ "symbol": "C", "step": 0, "length": 16 }] }]
+}
+```
+
+- 조성은 음표와 코드 구성음의 피치 클래스 분포를 Krumhansl-Kessler 프로파일과 비교해 추정합니다. 속7화음은 5도 아래 조성에 가중치를 더합니다.
+- 후보는 해당 조성의 다이어토닉 3화음과 7화음입니다. 점수는 직전 코드에서의 기능 화성 전이, 다음 코드로의 연결, 구간 멜로디와의 구성음 일치, 8마디 끝의 마침·반종지 보너스, 직전 코드 반복 감점을 합산합니다.
+- step 위치에 이미 코드가 있고 noteIds를 보내면 그 구성음은 멜로디 평가에서 제외합니다.
+- progressions는 조성에 맞춘 4코드 상용 진행 네 가지를 8마디(마디당 한 코드)로 펼친 목록입니다.
+- 추천 기호는 모두 프로젝트 검증이 허용하는 코드이며 음역 C4–C6 안에 들어갑니다. 전조, 세컨더리 도미넌트, 차용화음은 아직 제안하지 않습니다.

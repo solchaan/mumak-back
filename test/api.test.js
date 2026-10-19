@@ -64,16 +64,55 @@ test('project validator enforces timing, note IDs, mixer and audio data constrai
 
 test('staff chords and enharmonic spellings survive API persistence', async t => {
   const { request } = await setup(t); const p = fixture();
-  const spellings = ['Bb4', 'D5', 'F5', 'A5'];
-  p.notes = chordPitches('Bbmaj7').map((pitch, i) => ({ id: randomUUID(), pitch, spelling: spellings[i], step: 16, length: 8, velocity: .7 }));
-  p.chords = [{ id: randomUUID(), symbol: 'Bbmaj7', step: 16, length: 8, noteIds: p.notes.map(n => n.id) }];
+  p.notes = [{ id: randomUUID(), pitch: 70, spelling: 'Bb4', step: 16, length: 8, velocity: .7 }];
+  p.chords = [{ id: randomUUID(), symbol: 'G7', step: 32, length: 16 }, { id: randomUUID(), symbol: 'Bbmaj7', step: 16, length: 8 }];
   assert.equal((await request(`/projects/${p.id}`, put(p))).status, 200);
   const loaded = await (await request(`/projects/${p.id}`)).json();
-  assert.deepEqual(loaded.notes, p.notes); assert.deepEqual(loaded.chords, p.chords);
-  const bad = { ...p, chords: [{ ...p.chords[0], symbol: 'G7' }] };
-  assert.equal((await request(`/projects/${p.id}`, put(bad))).status, 400);
+  assert.deepEqual(loaded.notes, p.notes); assert.deepEqual(loaded.chords, [p.chords[1], p.chords[0]], 'chords are stored sorted by position');
+  assert.equal((await request(`/projects/${p.id}`, put({ ...p, chords: [{ ...p.chords[0], symbol: 'H7' }] }))).status, 400);
+  assert.equal((await request(`/projects/${p.id}`, put({ ...p, chords: [p.chords[0], { ...p.chords[1], step: 32 }] }))).status, 400);
   assert.throws(() => validateProject({ ...p, notes: p.notes.map(n => ({ ...n, spelling: 'C4' })) }));
-  assert.throws(() => validateProject({ ...p, chords: [{ ...p.chords[0], noteIds: [randomUUID()] }] }));
+  // Legacy clients attached generated note IDs to chords; the field is tolerated and stripped.
+  assert.deepEqual(validateProject({ ...p, chords: [{ ...p.chords[1], noteIds: [randomUUID()] }] }).chords, [p.chords[1]]);
+  assert.throws(() => validateProject({ ...p, chords: [{ ...p.chords[1], noteIds: [1] }] }));
   assert.deepEqual(validateProject(fixture()).chords, []);
   assert.equal(chordPitches('B#aug'), null);
+});
+
+test('key signatures persist and only canonical names are accepted', async t => {
+  const { request } = await setup(t); const p = fixture();
+  assert.equal(validateProject(p).key, null);
+  assert.equal((await request(`/projects/${p.id}`, put({ ...p, key: { tonic: 'Gb', mode: 'major' } }))).status, 200);
+  assert.deepEqual((await (await request(`/projects/${p.id}`)).json()).key, { tonic: 'Gb', mode: 'major' });
+  assert.equal((await request(`/projects/${p.id}`, put({ ...p, key: null }))).status, 200);
+  assert.equal((await (await request(`/projects/${p.id}`)).json()).key, null);
+  for (const invalid of [{ tonic: 'H', mode: 'major' }, { tonic: 'Gb', mode: 'minor' }, { tonic: 'F#', mode: 'major' }, { tonic: 'C', mode: 'dorian' }, 'G', 7]) {
+    assert.throws(() => validateProject({ ...p, key: invalid }), JSON.stringify(invalid));
+  }
+  assert.deepEqual(validateProject({ ...p, key: { tonic: 'F#', mode: 'minor', extra: true } }).key, { tonic: 'F#', mode: 'minor' });
+});
+
+test('accompaniment pattern defaults to four beats and persists', async t => {
+  const { request } = await setup(t); const p = fixture();
+  assert.deepEqual(validateProject(p).accompaniment, { pattern: 'quarter' });
+  assert.equal((await request(`/projects/${p.id}`, put({ ...p, accompaniment: { pattern: 'eighth' } }))).status, 200);
+  assert.deepEqual((await (await request(`/projects/${p.id}`)).json()).accompaniment, { pattern: 'eighth' });
+  for (const invalid of [{ pattern: 'swing' }, 'quarter', null, {}]) assert.throws(() => validateProject({ ...p, accompaniment: invalid }), JSON.stringify(invalid));
+});
+
+test('chord suggestion endpoint ranks diatonic chords and validates input', async t => {
+  const { request } = await setup(t, { token: 'secret-test-token' });
+  const headers = { 'Content-Type': 'application/json', Authorization: 'Bearer secret-test-token' };
+  const body = { step: 16, length: 16, chords: [{ symbol: 'G7', step: 0, length: 16 }], notes: [{ pitch: 64, step: 16, length: 8 }] };
+  const response = await request('/harmony/suggest', { method: 'POST', headers, body: JSON.stringify(body) });
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.equal(result.key.label, 'C 장조'); assert.equal(result.suggestions[0].symbol, 'C'); assert.equal(result.progressions.length, 4);
+  assert.equal((await request('/harmony/suggest', { method: 'POST', headers, body: JSON.stringify({ step: 200 }) })).status, 400);
+  assert.equal((await request('/harmony/suggest', { method: 'POST', headers, body: '{' })).status, 400);
+  assert.equal((await request('/harmony/suggest', { method: 'POST', headers: { Authorization: headers.Authorization }, body: '{}' })).status, 415);
+  assert.equal((await request('/harmony/suggest', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status, 401);
+  assert.equal((await request('/harmony/suggest', { headers })).status, 405);
+  const preflight = await request('/harmony/suggest', { method: 'OPTIONS', headers: { Origin: 'http://127.0.0.1:5173' } });
+  assert.match(preflight.headers.get('access-control-allow-methods'), /POST/);
 });

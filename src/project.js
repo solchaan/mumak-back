@@ -1,4 +1,5 @@
 import { chordPitches, spellingPitch } from './notation.js';
+import { KEY_NAMES } from './harmony.js';
 export const ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const bounded = (v, min, max) => typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max;
 const integer = (v, min, max) => Number.isInteger(v) && bounded(v, min, max);
@@ -17,19 +18,19 @@ export function validateProject(p) {
   }
   const chords = p.chords === undefined ? [] : p.chords;
   if (!Array.isArray(chords) || chords.length > 128) fail('Invalid chords.');
-  const chordIds = new Set(), starts = new Set(), claimed = new Set();
+  const chordIds = new Set(), starts = new Set();
   for (const c of chords) {
-    if (!c || !ID.test(c.id) || chordIds.has(c.id) || !integer(c.step, 0, 127) || starts.has(c.step) || !integer(c.length, 1, 128 - c.step) || !Array.isArray(c.noteIds)) fail('Invalid chord.');
-    const pitches = chordPitches(c.symbol);
-    if (!pitches || pitches.length !== c.noteIds.length || new Set(c.noteIds).size !== c.noteIds.length) fail('Invalid chord symbol or tones.');
-    const actual = c.noteIds.map(id => {
-      const note = p.notes.find(n => n.id === id);
-      if (!note || claimed.has(id) || note.step !== c.step || note.length !== c.length) fail('Invalid chord note reference.');
-      claimed.add(id); return note.pitch;
-    }).sort((a, b) => a - b);
-    if (actual.some((pitch, i) => pitch !== pitches[i])) fail('Chord tones do not match the symbol.');
+    // Lead-sheet chords are symbols with a position and duration; their tones are rendered by the client, not stored as notes.
+    if (!c || !ID.test(c.id) || chordIds.has(c.id) || !integer(c.step, 0, 127) || starts.has(c.step) || !integer(c.length, 1, 128 - c.step) || !chordPitches(c.symbol)) fail('Invalid chord.');
+    // Older clients sent generated chord-tone note IDs; accept the field for compatibility but never persist it.
+    if (c.noteIds !== undefined && (!Array.isArray(c.noteIds) || c.noteIds.length > 8 || c.noteIds.some(id => typeof id !== 'string'))) fail('Invalid chord note references.');
     chordIds.add(c.id); starts.add(c.step);
   }
+  // Chord accompaniment pattern; files written before the setting existed play four beats per bar.
+  const accompaniment = p.accompaniment === undefined ? { pattern: 'quarter' } : p.accompaniment;
+  if (!accompaniment || typeof accompaniment !== 'object' || !['quarter', 'half', 'eighth', 'whole'].includes(accompaniment.pattern)) fail('Invalid accompaniment pattern.');
+  const signature = p.key === undefined ? null : p.key;
+  if (signature !== null && (!signature || typeof signature !== 'object' || !KEY_NAMES[signature.mode]?.includes(signature.tonic))) fail('Invalid key signature.');
   for (const key of ['kick', 'snare', 'hat']) {
     const steps = p.drums?.[key];
     if (!Array.isArray(steps) || steps.length > 128 || steps.some(s => !integer(s, 0, 127)) || new Set(steps).size !== steps.length) fail('Invalid drum pattern.');
@@ -45,7 +46,9 @@ export function validateProject(p) {
   return {
     version: 1, id: p.id, title: p.title.trim(), bars: 8, bpm: p.bpm, instrument: p.instrument,
     notes: p.notes.map(({ id, pitch, step, length, velocity, spelling }) => ({ id, pitch, step, length, velocity, ...(spelling === undefined ? {} : { spelling }) })),
-    chords: chords.map(({ id, symbol, step, length, noteIds }) => ({ id, symbol, step, length, noteIds: [...noteIds] })),
+    chords: chords.map(({ id, symbol, step, length }) => ({ id, symbol, step, length })).sort((a, b) => a.step - b.step),
+    key: signature === null ? null : { tonic: signature.tonic, mode: signature.mode },
+    accompaniment: { pattern: accompaniment.pattern },
     drums: Object.fromEntries(['kick', 'snare', 'hat'].map(k => [k, [...p.drums[k]].sort((a, b) => a - b)])),
     mixer: Object.fromEntries(['keys', 'drums', 'voice'].map(k => [k, { volume: p.mixer[k].volume, mute: p.mixer[k].mute }])),
     recording: p.recording === null ? null : { dataUrl: p.recording.dataUrl, duration: p.recording.duration, offset: p.recording.offset },
