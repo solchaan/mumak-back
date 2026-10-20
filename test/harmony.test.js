@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { estimateKey, parseSuggestRequest, romanOf, suggestChords } from '../src/harmony.js';
+import { estimateKey, parseSuggestRequest, progressionTips, romanOf, suggestChords } from '../src/harmony.js';
 import { chordPitches } from '../src/notation.js';
 
 const chord = (symbol, step, length = 16) => ({ symbol, step, length });
@@ -23,7 +23,7 @@ test('ranks functional transitions, cadences and melody fit', () => {
   assert.equal(opening.suggestions[0].symbol, 'C'); assert.equal(opening.suggestions[0].roman, 'I');
   assert.match(opening.suggestions[0].reason, /여는 코드/);
   const afterV = suggest({ step: 16, chords: [chord('G7', 0)], notes: [{ pitch: 64, step: 16, length: 8 }] });
-  assert.deepEqual(afterV.previous, { symbol: 'G7', roman: 'V' });
+  assert.deepEqual(afterV.previous, { symbol: 'G7', roman: 'V7' });
   assert.equal(afterV.suggestions[0].symbol, 'C'); assert.match(afterV.suggestions[0].reason, /V → I 진행 · 멜로디 음 1개 포함/);
   const ending = suggest({ step: 112, length: 16, chords: [chord('F', 0), chord('C', 16), chord('Bb', 32)] });
   assert.equal(ending.key.label, 'F 장조'); assert.equal(ending.suggestions[0].symbol, 'F'); assert.match(ending.suggestions[0].reason, /마침 코드/);
@@ -51,7 +51,42 @@ test('every suggested symbol is a supported chord and progressions fill eight ba
   }
   assert.deepEqual(suggest({ key: { tonic: 'F', mode: 'major' } }).progressions[0].symbols, ['F', 'C', 'Dm', 'Bb']);
   assert.deepEqual(suggest({ key: { tonic: 'A', mode: 'minor' } }).progressions[1].symbols, ['Am', 'Dm', 'F', 'E']);
-  assert.equal(romanOf('E7', 9, 'minor'), 'V'); assert.equal(romanOf('Bbmaj7', 0, 'major'), null);
+  assert.equal(romanOf('E7', 9, 'minor'), 'V7'); assert.equal(romanOf('E', 9, 'minor'), 'V'); assert.equal(romanOf('Bbmaj7', 0, 'major'), null);
+  assert.equal(romanOf('Bdim', 0, 'major'), 'vii°'); assert.equal(romanOf('Bm7b5', 0, 'major'), 'vii°7'); assert.equal(romanOf('Bb', 5, 'major'), 'IV');
+});
+
+test('progression tips explain monotony, cadences, missing functions and well-known patterns', () => {
+  const bars = symbols => symbols.map((symbol, i) => chord(symbol, i * 16));
+  const tipsFor = (symbols, extra = {}) => suggest({ chords: bars(symbols), key: { tonic: 'C', mode: 'major' }, ...extra }).tips;
+  const texts = tips => tips.map(t => t.text).join('\n');
+  assert.match(texts(suggest({}).tips), /코드가 아직 없어요/);
+  const mono = tipsFor(['C', 'C', 'C', 'C', 'C', 'C', 'C', 'C']);
+  assert.equal(mono[0].level, 'warn'); assert.match(mono[0].text, /단조로울 수 있어요/);
+  const pop = tipsFor(['C', 'G', 'Am', 'F', 'C', 'G', 'Am', 'F']);
+  assert.ok(pop.some(t => t.level === 'good' && /I–V–vi–IV/.test(t.text)));
+  assert.ok(pop.some(t => /마지막 코드 F/.test(t.text)), 'ending on IV is called out');
+  assert.ok(pop.some(t => /모두 3화음/.test(t.text)));
+  const closed = tipsFor(['C', 'F', 'G7', 'C', 'Dm7', 'G7', 'Cmaj7', 'C']);
+  assert.ok(closed.some(t => /ii–V–I/.test(t.text)) && closed.some(t => /마침 느낌이 분명/.test(t.text)));
+  assert.ok(!closed.some(t => /모두 3화음/.test(t.text)));
+  const half = tipsFor(['C', 'F', 'C', 'F', 'C', 'F', 'C', 'G']);
+  assert.ok(half.some(t => /반종지/.test(t.text)) && half.some(t => /두 코드만|세 번 이상/.test(t.text)) === false || half.some(t => /반종지/.test(t.text)));
+  const noV = tipsFor(['C', 'F', 'Am', 'F', 'C', 'F', 'Am', 'C']);
+  assert.ok(noV.some(t => /딸림화음/.test(t.text)));
+  const foreign = tipsFor(['C', 'Eb', 'F', 'C', 'C', 'F', 'G', 'C']);
+  assert.ok(foreign.some(t => /Eb는 C 장조 밖/.test(t.text)));
+  const retro = tipsFor(['C', 'G', 'F', 'C', 'C', 'G', 'F', 'C']);
+  assert.ok(retro.some(t => /V 다음에 IV/.test(t.text)));
+  const gap = tipsFor(['C', 'G']);
+  assert.ok(gap.some(t => /마지막 마디까지/.test(t.text)));
+  const clash = tipsFor(['C', 'G', 'Am', 'F', 'C', 'G', 'Am', 'C'], { notes: [{ pitch: 61, step: 0, length: 4 }, { pitch: 63, step: 16, length: 4 }] });
+  assert.ok(clash.some(t => t.level === 'warn' && /2군데/.test(t.text)));
+  const minor = progressionTips(parseSuggestRequest({ chords: bars(['Am', 'F', 'C', 'G', 'Am', 'F', 'C', 'G']) }), { tonic: 9, mode: 'minor' });
+  assert.ok(minor.some(t => /i–VI–III–VII/.test(t.text)));
+  for (const t of [...pop, ...closed, ...minor]) assert.ok(['good', 'info', 'warn'].includes(t.level));
+  assert.ok(pop.length <= 6);
+  const response = suggest({ chords: bars(['Dm7', 'G7', 'C']) });
+  assert.deepEqual(response.analysis.romans.map(r => r.roman), ['ii7', 'V7', 'I']);
 });
 
 test('rejects malformed suggestion requests', () => {

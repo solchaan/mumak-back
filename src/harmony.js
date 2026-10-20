@@ -91,18 +91,21 @@ function candidates(tonic, mode) {
     ];
   }).filter(c => chordPitches(c.symbol));
 }
-// Maps a chord symbol to its scale-degree function in the key, or null for non-diatonic chords.
+// Maps a chord symbol to its scale-degree function in the key ('V', 'V7', 'ii7' …), or null for non-diatonic chords.
 export function romanOf(symbol, tonic, mode) {
   const pitches = chordPitches(symbol);
   if (!pitches) return null;
   const offset = (pitches[0] - tonic + 120) % 12;
   const shape = pitches.map(p => p - pitches[0]).join(',');
-  const degree = DEGREES[mode].find(d => d.offset === offset && [d.quality, d.seventh].some(q => {
-    const p = chordPitches(rootName(tonic, mode, d.offset) + q);
-    return p && p.map(x => x - p[0]).join(',') === shape;
-  }));
-  return degree ? degree.roman : null;
+  const matches = quality => { const p = chordPitches(SHARP[(tonic + offset) % 12] + quality); return !!p && p.map(x => x - p[0]).join(',') === shape; };
+  for (const d of DEGREES[mode]) {
+    if (d.offset !== offset) continue;
+    if (matches(d.quality)) return d.roman;
+    if (matches(d.seventh)) return d.roman + '7';
+  }
+  return null;
 }
+const baseRoman = roman => roman && roman.replace(/7$/, '');
 
 export function parseSuggestRequest(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) fail('Request body must be a JSON object.');
@@ -138,6 +141,59 @@ export function parseSuggestRequest(body) {
   };
 }
 
+const POPULAR = {
+  major: [['I', 'V', 'vi', 'IV', 'I–V–vi–IV는 수많은 팝송이 쓰는 진행이에요. 밝게 시작해 vi에서 살짝 가라앉았다가 IV로 다시 열리는 흐름이 특징이에요.'], ['vi', 'IV', 'I', 'V', 'vi–IV–I–V는 단조처럼 시작해 장조로 풀리는 진행이에요. 애절한 분위기의 팝·록에서 자주 들려요.'], ['I', 'vi', 'IV', 'V', 'I–vi–IV–V는 1950년대 두왑부터 발라드까지 쓰이는 고전 진행이에요. 어디에 써도 안정적이에요.'], ['ii', 'V', 'I', null, 'ii–V–I는 재즈와 팝에서 가장 기본이 되는 마침 공식이에요. 긴장(ii→V)에서 해결(I)로 가는 흐름을 느껴 보세요.']],
+  minor: [['i', 'VI', 'III', 'VII', 'i–VI–III–VII는 단조의 대표 진행이에요. 어둡게 시작해 III·VII에서 밝은 색이 스치는 것이 매력이에요.'], ['i', 'iv', 'VI', 'V', 'i–iv–VI–V는 V(장3화음)로 돌아오는 긴장이 큰 단조 진행이에요. 드라마틱한 마무리에 좋아요.'], ['i', 'VII', 'VI', 'V', 'i–VII–VI–V는 베이스가 계단처럼 내려가는 안달루시아 진행이에요. 플라멩코·록에서 자주 들려요.'], ['ii°', 'V', 'i', null, 'ii°–V–i는 단조의 기본 마침 공식이에요. V를 V7으로 쓰면 해결감이 더 강해져요.']],
+};
+// Study notes about the whole progression: what works, what may sound flat, and what to try next.
+export function progressionTips(request, key) {
+  const { chords, notes } = request;
+  const { tonic, mode } = key;
+  const tips = [];
+  const add = (level, text) => { if (!tips.some(t => t.text === text)) tips.push({ level, text }); };
+  const tonicRoman = mode === 'major' ? 'I' : 'i';
+  if (!chords.length) { add('info', '코드가 아직 없어요. 으뜸화음(I)으로 시작하거나 추천 진행을 적용해 보고, 들리는 느낌을 비교해 보세요.'); return tips; }
+  const romans = chords.map(c => romanOf(c.symbol, tonic, mode));
+  const bases = romans.map(r => r && r.replace(/7$/, ''));
+  const symbols = chords.map(c => c.symbol);
+  const distinct = new Set(symbols);
+  const scale = new Set(SCALES[mode].map(o => (tonic + o) % 12));
+  for (const [a, b, c, d, text] of POPULAR[mode]) {
+    const pattern = [a, b, c, d].filter(Boolean);
+    for (let i = 0; i + pattern.length <= bases.length; i++) if (pattern.every((roman, j) => bases[i + j] === roman)) { add('good', text); break; }
+  }
+  if (chords.length >= 3 && distinct.size === 1) add('warn', `${symbols[0]} 하나만 ${chords.length}번 이어져요. 같은 코드가 계속되면 단조로울 수 있어요. 중간에 IV나 V를 넣어 흐름을 만들어 보세요.`);
+  else if (chords.length >= 4 && distinct.size === 2) add('info', '두 코드만 번갈아 쓰고 있어요. 반복은 안정감을 주지만, 뒤쪽 마디에 새 코드를 하나 넣으면 전개가 생겨요.');
+  let run = 1;
+  for (let i = 1; i < symbols.length; i++) {
+    run = symbols[i] === symbols[i - 1] ? run + 1 : 1;
+    if (run === 3 && distinct.size > 1) { add('info', `${symbols[i]}가 세 번 이상 연달아 나와요. 길게 머무는 코드는 같은 기능의 다른 코드(예: I ↔ vi, IV ↔ ii)로 바꿔 변화를 줄 수 있어요.`); break; }
+  }
+  const lastChord = chords[chords.length - 1], lastBase = bases[bases.length - 1];
+  if (lastChord.step + lastChord.length >= 120) {
+    if (lastBase === tonicRoman) add('good', '마지막이 으뜸화음으로 끝나 마침 느낌이 분명해요.');
+    else if (lastBase === 'V') add('info', '마지막이 V로 끝나 "다음이 이어질 것 같은" 반종지예요. 반복 구간에는 잘 어울리고, 끝맺음이 필요하면 I로 마무리해 보세요.');
+    else add('info', `마지막 코드 ${lastChord.symbol}${lastBase ? ` (${lastBase})` : ''}는 끝맺음이 열려 있어요. 분명히 마치려면 V → I로 닫아 보세요.`);
+  } else add('info', '마지막 마디까지 코드가 이어지지 않아요. 끝까지 채우면 반복 재생이 자연스러워져요.');
+  if (chords.length >= 3 && !bases.includes('V') && !bases.includes('vii°')) add('info', 'V(딸림화음)가 한 번도 없어요. V는 으뜸화음으로 돌아가려는 긴장을 만들어 줘요. 마디 끝에 V나 V7을 넣어 보세요.');
+  if (chords.length >= 4 && !['IV', 'ii', 'iv', 'ii°'].some(r => bases.includes(r))) add('info', 'IV·ii 같은 버금딸림 기능이 없어요. I와 V 사이에 IV를 넣으면 흐름이 부드러워져요.');
+  for (let i = 1; i < bases.length; i++) if (bases[i - 1] === 'V' && bases[i] === 'IV') { add('info', 'V 다음에 IV가 와요. 고전 화성에서는 약한 진행으로 보지만 록·블루스에서는 흔한 소리예요. 의도한 느낌이면 괜찮아요.'); break; }
+  const foreign = [...new Set(chords.filter((_, i) => !romans[i]).map(c => c.symbol))];
+  if (foreign.length) add('info', `${foreign.join(', ')}는 ${keyName(tonic, mode)} ${mode === 'major' ? '장조' : '단조'} 밖의 코드예요. 차용화음이나 전조처럼 색을 더하지만, 어색하게 들리면 같은 조의 코드로 바꿔 보세요.`);
+  if (chords.length >= 4 && chords.every(c => !/(maj7|m7b5|dim7|m7|7|6)$/.test(c.symbol))) add('info', '모두 3화음이에요. V를 V7으로, I를 Imaj7으로 바꾸면 색채가 풍부해져요.');
+  if (chords[0].step === 0 && bases[0] && bases[0] !== tonicRoman) add('info', `${symbols[0]} (${bases[0]})로 시작해요. 으뜸화음이 아닌 시작은 신선하지만 조성이 모호해질 수 있어요. 의도한 효과인지 들어 보세요.`);
+  const perBar = new Map();
+  for (const c of chords) perBar.set(Math.floor(c.step / 16), (perBar.get(Math.floor(c.step / 16)) || 0) + 1);
+  if (Math.max(...perBar.values()) >= 4) add('info', '한 마디에 코드가 4개 이상인 곳이 있어요. 빠른 코드 체인지는 긴장감을 주지만, 보컬 라인이 묻히면 코드를 줄여 보세요.');
+  let clashes = 0;
+  for (const c of chords) {
+    const tones = new Set((chordPitches(c.symbol) || []).map(p => p % 12));
+    for (const n of notes) if (n.step % 4 === 0 && n.step >= c.step && n.step < c.step + c.length && !tones.has(n.pitch % 12) && !scale.has(n.pitch % 12)) clashes++;
+  }
+  if (clashes >= 2) add('warn', `센 박의 멜로디 음이 코드에도 조성에도 없는 곳이 ${clashes}군데 있어요. 의도한 긴장이 아니면 멜로디를 코드 구성음으로 옮기거나 코드를 바꿔 보세요.`);
+  return tips.slice(0, 6);
+}
+
 export function suggestChords(request) {
   const { step, length, limit, notes, chords } = request;
   const key = request.key ? { ...request.key, confidence: 1 } : estimateKey(notes, chords);
@@ -148,6 +204,7 @@ export function suggestChords(request) {
   const replaced = new Set(chords.filter(c => c.step === step).flatMap(c => c.noteIds));
   const previousRoman = previous ? romanOf(previous.symbol, tonic, mode) : null;
   const nextRoman = next ? romanOf(next.symbol, tonic, mode) : null;
+  const previousBase = baseRoman(previousRoman), nextBase = baseRoman(nextRoman);
   const end = step + length;
   const melody = notes.filter(n => !replaced.has(n.id) && n.step < end && n.step + n.length > step);
   const totalOverlap = melody.reduce((s, n) => s + Math.min(n.step + n.length, end) - Math.max(n.step, step), 0);
@@ -157,20 +214,20 @@ export function suggestChords(request) {
     const tones = new Set(chordPitches(candidate.symbol).map(p => p % 12));
     const reasons = [];
     let score = 0;
-    if (previous && previousRoman) {
-      const transition = TRANSITIONS[mode][previousRoman]?.[base] ?? 0;
+    if (previous && previousBase) {
+      const transition = TRANSITIONS[mode][previousBase]?.[base] ?? 0;
       score += transition * candidate.weight;
-      if (transition >= .8) reasons.push(`${previousRoman} → ${base} 진행`);
+      if (transition >= .8) reasons.push(`${previousBase} → ${base} 진행`);
     } else if (previous) {
       score += .4 * candidate.weight;
     } else {
       score += OPENINGS[mode][base] * candidate.weight;
       if (OPENINGS[mode][base] >= .5) reasons.push('여는 코드');
     }
-    if (nextRoman) {
-      const into = TRANSITIONS[mode][base]?.[nextRoman] ?? 0;
+    if (nextBase) {
+      const into = TRANSITIONS[mode][base]?.[nextBase] ?? 0;
       score += .5 * into;
-      if (into >= .8) reasons.push(`다음 ${nextRoman}로 자연스럽게 연결`);
+      if (into >= .8) reasons.push(`다음 ${nextBase}로 자연스럽게 연결`);
     }
     if (totalOverlap) {
       let fit = 0, matched = 0;
@@ -201,5 +258,7 @@ export function suggestChords(request) {
     previous: previous ? { symbol: previous.symbol, roman: previousRoman } : null,
     suggestions: ranked.slice(0, limit),
     progressions,
+    analysis: { romans: chords.map(c => ({ symbol: c.symbol, step: c.step, roman: romanOf(c.symbol, tonic, mode) })) },
+    tips: progressionTips(request, key),
   };
 }
