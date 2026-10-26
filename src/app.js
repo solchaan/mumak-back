@@ -3,6 +3,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { ProjectStore } from './store.js';
 import { ID, validateProject } from './project.js';
 import { parseSuggestRequest, suggestChords } from './harmony.js';
+import { reviewSketch } from './review.js';
 
 const http = (status, message) => Object.assign(new Error(message), { status });
 
@@ -45,10 +46,11 @@ export async function createApp({ dataDir, token = '', origins = ['http://127.0.
       const path = new URL(req.url, 'http://localhost').pathname;
       if (path === '/api/health' && req.method === 'GET') return send(200, { status: 'ok', version: 1 });
       if (path === '/api/projects' && req.method === 'GET') return send(200, { projects: await store.list() });
-      if (path === '/api/harmony/suggest') {
+      if (path === '/api/harmony/suggest' || path === '/api/harmony/review') {
         if (req.method !== 'POST') { res.setHeader('Allow', 'POST'); return send(405, { error: 'Method not allowed.' }); }
         // Suggestion requests carry notes and chords only, never recordings, so a small limit suffices.
-        return send(200, suggestChords(parseSuggestRequest(await readJson(req, Math.min(maxBytes, 1024 * 1024)))));
+        const request = parseSuggestRequest(await readJson(req, Math.min(maxBytes, 1024 * 1024)));
+        return send(200, path.endsWith('/review') ? reviewSketch(request) : suggestChords(request));
       }
       const match = path.match(/^\/api\/projects\/([^/]+)$/);
       if (!match) return send(404, { error: 'Route not found.' });

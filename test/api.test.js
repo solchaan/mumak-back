@@ -116,3 +116,16 @@ test('chord suggestion endpoint ranks diatonic chords and validates input', asyn
   const preflight = await request('/harmony/suggest', { method: 'OPTIONS', headers: { Origin: 'http://127.0.0.1:5173' } });
   assert.match(preflight.headers.get('access-control-allow-methods'), /POST/);
 });
+
+test('sketch review validates input, returns located alternatives and never stores a project', async t => {
+  const { request } = await setup(t);
+  const response = await request('/harmony/review', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: { tonic: 'C', mode: 'major' }, notes: [{ id: 'f', pitch: 65, step: 0, length: 8 }], chords: [{ symbol: 'C', step: 0, length: 16 }] }) });
+  assert.equal(response.status, 200);
+  const report = await response.json();
+  assert.equal(report.alternatives[0].edit.pitch, 64);
+  assert.equal(report.consider[0].location, '1마디 1박');
+  assert.deepEqual((await (await request('/projects')).json()).projects, []);
+  assert.equal((await request('/harmony/review')).status, 405);
+  assert.equal((await request('/harmony/review', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{' })).status, 400);
+  assert.equal((await request('/harmony/review', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ notes: [{ pitch: 65, step: 127, length: 8 }] }) })).status, 400);
+});
