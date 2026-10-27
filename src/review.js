@@ -11,7 +11,7 @@ const tones = chord => new Set(chordPitches(chord.symbol).map(p => p % 12));
 export function reviewSketch(request) {
   const legacy = new Set(request.chords.flatMap(c => c.noteIds));
   const notes = request.notes.filter(n => !legacy.has(n.id)).sort((a, b) => a.step - b.step || a.pitch - b.pitch);
-  const chords = request.chords.map((c, i, all) => ({ ...c, length: Math.min(c.length, (all[i + 1]?.step ?? 128) - c.step) })).filter(c => c.length > 0);
+  const chords = request.chords.map((c, i, all) => ({ ...c, length: Math.min(c.length, (all[i + 1]?.step ?? (request.bars ?? 8) * 16) - c.step) })).filter(c => c.length > 0);
   const inferred = request.key || estimateKey(notes, chords);
   const key = { tonic: names[inferred.tonic], mode: inferred.mode, estimated: !request.key };
   const good = [], consider = [], alternatives = [], limitations = [];
@@ -71,7 +71,7 @@ export function reviewSketch(request) {
         if (Math.abs(shifted - a.pitch) < Math.abs(leap)) pitchAlternative(b, shifted, '같은 음이름을 다른 옥타브에 놓아 도약 폭을 줄입니다. 강조감이 줄어드는지도 비교하세요.');
       }
     }
-    for (let bar = 1; bar < 8; bar++) {
+    for (let bar = 1; bar < (request.bars ?? 8); bar++) {
       const a = notes.filter(n => n.step >= (bar - 1) * 16 && n.step + n.length <= bar * 16);
       const b = notes.filter(n => n.step >= bar * 16 && n.step + n.length <= (bar + 1) * 16);
       const pattern = list => list.map(n => [n.step % 16, n.length, n.pitch - list[0].pitch].join(':')).join(',');
@@ -96,6 +96,6 @@ export function reviewSketch(request) {
     if (option && alternatives.length < 4) alternatives.push({ title: `${c.symbol} → ${option.symbol}`, step: c.step, location: location(c.step), reason: `해당 위치의 멜로디와 앞뒤 코드를 고려한 비교 후보입니다. ${option.reason}. 더 좋은 코드라는 판정은 아닙니다.`, edit: { kind: 'chord', step: c.step, fromSymbol: c.symbol, symbol: option.symbol } });
   }
   const last = chords.at(-1);
-  if (last && last.step + last.length === 128 && !['I','i'].includes(romanOf(last.symbol, inferred.tonic, inferred.mode)?.replace(/7$/, ''))) add(consider, 'open-ending', last.step, '마지막이 으뜸화음 이외의 코드입니다', `${last.symbol}로 끝납니다. 반복을 이어갈지 곡을 마칠지에 따라 열린 느낌이 어울리는지 들어보세요.`);
+  if (last && last.step + last.length === (request.bars ?? 8) * 16 && !['I','i'].includes(romanOf(last.symbol, inferred.tonic, inferred.mode)?.replace(/7$/, ''))) add(consider, 'open-ending', last.step, '마지막이 으뜸화음 이외의 코드입니다', `${last.symbol}로 끝납니다. 반복을 이어갈지 곡을 마칠지에 따라 열린 느낌이 어울리는지 들어보세요.`);
   return { key, good, consider, alternatives, limitations, summary: `${notes.length}개 음표와 ${chords.length}개 코드의 관계를 확인했습니다. 총점이나 정답을 매기지 않습니다.` };
 }

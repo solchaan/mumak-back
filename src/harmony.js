@@ -46,7 +46,6 @@ const PRESETS = {
   major: [['I', 'V', 'vi', 'IV'], ['I', 'vi', 'IV', 'V'], ['vi', 'IV', 'I', 'V'], ['ii', 'V', 'I', 'vi']],
   minor: [['i', 'VI', 'III', 'VII'], ['i', 'iv', 'VI', 'V'], ['i', 'VII', 'VI', 'V'], ['VI', 'VII', 'i', 'i']],
 };
-const STEPS = 128;
 const fail = (message) => { const error = new Error(message); error.status = 400; throw error; };
 const integer = (v, min, max) => Number.isInteger(v) && v >= min && v <= max;
 const pitchClass = (name) => { const i = SHARP.indexOf(name); return i >= 0 ? i : FLAT.indexOf(name); };
@@ -109,21 +108,24 @@ const baseRoman = roman => roman && roman.replace(/7$/, '');
 
 export function parseSuggestRequest(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) fail('Request body must be a JSON object.');
+  const bars = body.bars === undefined ? 8 : body.bars;
+  if (!integer(bars, 1, 256)) fail('bars must be an integer from 1 to 256.');
+  const STEPS = bars * 16;
   const step = body.step === undefined ? 0 : body.step;
-  if (!integer(step, 0, STEPS - 1)) fail('step must be an integer from 0 to 127.');
+  if (!integer(step, 0, STEPS - 1)) fail('step must be an integer inside the project timeline.');
   const length = body.length === undefined ? Math.min(16, STEPS - step) : body.length;
-  if (!integer(length, 1, STEPS - step)) fail('length must fit inside the 8-bar timeline.');
+  if (!integer(length, 1, STEPS - step)) fail('length must fit inside the project timeline.');
   const limit = body.limit === undefined ? 6 : body.limit;
   if (!integer(limit, 1, 12)) fail('limit must be an integer from 1 to 12.');
   const notes = body.notes === undefined ? [] : body.notes;
-  if (!Array.isArray(notes) || notes.length > 512) fail('notes must be an array of at most 512 items.');
+  if (!Array.isArray(notes) || notes.length > bars * 64) fail('notes must be an array of at most 64 items per bar.');
   for (const n of notes) {
     if (!n || !integer(n.pitch, 0, 127) || !integer(n.step, 0, STEPS - 1) || !integer(n.length, 1, STEPS - n.step)) fail('Invalid note.');
     if (n.velocity !== undefined && !(typeof n.velocity === 'number' && n.velocity >= 0 && n.velocity <= 1)) fail('Invalid note velocity.');
     if (n.id !== undefined && (typeof n.id !== 'string' || n.id.length > 64)) fail('Invalid note ID.');
   }
   const chords = body.chords === undefined ? [] : body.chords;
-  if (!Array.isArray(chords) || chords.length > 128) fail('chords must be an array of at most 128 items.');
+  if (!Array.isArray(chords) || chords.length > STEPS) fail('chords must be an array of at most 16 items per bar.');
   for (const c of chords) {
     if (!c || typeof c.symbol !== 'string' || c.symbol.length > 12 || !chordPitches(c.symbol) || !integer(c.step, 0, STEPS - 1) || !integer(c.length, 1, STEPS - c.step)) fail('Invalid chord.');
     if (c.noteIds !== undefined && (!Array.isArray(c.noteIds) || c.noteIds.length > 8 || c.noteIds.some(id => typeof id !== 'string' || id.length > 64))) fail('Invalid chord note references.');
@@ -135,7 +137,7 @@ export function parseSuggestRequest(body) {
     key = { tonic, mode: body.key.mode };
   }
   return {
-    step, length, limit, key,
+    bars, step, length, limit, key,
     notes: notes.map(n => ({ id: n.id, pitch: n.pitch, step: n.step, length: n.length, velocity: n.velocity ?? .7 })),
     chords: chords.map(c => ({ symbol: c.symbol, step: c.step, length: c.length, noteIds: c.noteIds || [] })).sort((a, b) => a.step - b.step),
   };
@@ -170,7 +172,7 @@ export function progressionTips(request, key) {
     if (run === 3 && distinct.size > 1) { add('info', `${symbols[i]}가 세 번 이상 연달아 나와요. 길게 머무는 코드는 같은 기능의 다른 코드(예: I ↔ vi, IV ↔ ii)로 바꿔 변화를 줄 수 있어요.`); break; }
   }
   const lastChord = chords[chords.length - 1], lastBase = bases[bases.length - 1];
-  if (lastChord.step + lastChord.length >= 120) {
+  if (lastChord.step + lastChord.length >= (request.bars ?? 8) * 16 - 8) {
     if (lastBase === tonicRoman) add('good', '마지막이 으뜸화음으로 끝나 마침 느낌이 분명해요.');
     else if (lastBase === 'V') add('info', '마지막이 V로 끝나 "다음이 이어질 것 같은" 반종지예요. 반복 구간에는 잘 어울리고, 끝맺음이 필요하면 I로 마무리해 보세요.');
     else add('info', `마지막 코드 ${lastChord.symbol}${lastBase ? ` (${lastBase})` : ''}는 끝맺음이 열려 있어요. 분명히 마치려면 V → I로 닫아 보세요.`);
@@ -240,7 +242,7 @@ export function suggestChords(request) {
       score += .8 * fit / totalOverlap;
       if (matched) reasons.push(`멜로디 음 ${matched}개 포함`);
     }
-    if (end === STEPS) {
+    if (end === (request.bars ?? 8) * 16) {
       if (base === 'I' || base === 'i') { score += .6; reasons.push('마침 코드'); }
       else if (base === 'V') { score += .2; reasons.push('반종지'); }
     }
@@ -250,7 +252,7 @@ export function suggestChords(request) {
 
   const progressions = PRESETS[mode].map(pattern => {
     const symbols = pattern.map(roman => degreeSymbol(tonic, mode, roman));
-    return { name: pattern.join('–'), symbols, chords: Array.from({ length: 8 }, (_, bar) => ({ symbol: symbols[bar % 4], step: bar * 16, length: 16 })) };
+    return { name: pattern.join('–'), symbols, chords: Array.from({ length: request.bars ?? 8 }, (_, bar) => ({ symbol: symbols[bar % 4], step: bar * 16, length: 16 })) };
   });
   return {
     key: { tonic: keyName(tonic, mode), mode, label: `${keyName(tonic, mode)} ${mode === 'major' ? '장조' : '단조'}`, confidence: key.confidence, estimated: !request.key },

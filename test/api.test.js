@@ -129,3 +129,18 @@ test('sketch review validates input, returns located alternatives and never stor
   assert.equal((await request('/harmony/review', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{' })).status, 400);
   assert.equal((await request('/harmony/review', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ notes: [{ pitch: 65, step: 127, length: 8 }] }) })).status, 400);
 });
+
+test('extended projects persist and harmony covers the new final bar', async t => {
+  const { request } = await setup(t);
+  const p = { ...fixture(), bars: 9, chords: [{ id: randomUUID(), symbol: 'G7', step: 128, length: 16 }] };
+  p.notes[0].step = 140; p.drums.kick.push(143);
+  assert.equal((await request(`/projects/${p.id}`, put(p))).status, 200);
+  const loaded = await (await request(`/projects/${p.id}`)).json();
+  assert.equal(loaded.bars, 9); assert.equal(loaded.notes[0].step, 140);
+  assert.equal((await request(`/projects/${p.id}`, put({ ...p, bars: 8 }))).status, 400);
+  const response = await request('/harmony/suggest', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bars: 9, step: 128, length: 16, notes: p.notes, chords: p.chords }) });
+  assert.equal(response.status, 200);
+  const harmony = await response.json();
+  assert.equal(harmony.progressions[0].chords.length, 9);
+  assert.equal(harmony.progressions[0].chords.at(-1).step, 128);
+});

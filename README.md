@@ -62,7 +62,7 @@ PUT과 POST는 Content-Type: application/json이 필요합니다. API_TOKEN 설�
 }
 ```
 
-음표는 { id, pitch, step, length, velocity }입니다. UUID ID, MIDI pitch 60–84, step 0–127, 양의 정수 length, velocity 0.01–1을 허용합니다. 음표 최대 512개, BPM 40–240, 8마디입니다. recording은 null 또는 { dataUrl, duration, offset }이며 오디오 data URL, 초 단위 길이(최대 120초)와 시작 보정(-5~48초)을 저장합니다. 클라이언트 녹음 한도는 20 MB이며 API 요청은 base64 포함 최대 30 MiB입니다.
+음표는 { id, pitch, step, length, velocity }입니다. UUID ID, MIDI pitch 60–84, step 0–(bars × 16 − 1), 양의 정수 length, velocity 0.01–1을 허용합니다. 음표 최대 bars × 64개, BPM 40–240, 1–256마디입니다. recording은 null 또는 { dataUrl, duration, offset }이며 오디오 data URL, 초 단위 길이(최대 1541초)와 시작 보정(-5~48초)을 저장합니다. 클라이언트 녹음 한도는 20 MB이며 API 요청은 base64 포함 최대 30 MiB입니다.
 
 ## 저장 및 검증
 
@@ -122,9 +122,9 @@ POST /api/harmony/suggest는 외부 서비스 없이 규칙 기반으로 다음 
 ```
 
 - 조성은 음표와 코드 구성음의 피치 클래스 분포를 Krumhansl-Kessler 프로파일과 비교해 추정합니다. 속7화음은 5도 아래 조성에 가중치를 더합니다.
-- 후보는 해당 조성의 다이어토닉 3화음과 7화음입니다. 점수는 직전 코드에서의 기능 화성 전이, 다음 코드로의 연결, 구간 멜로디와의 구성음 일치, 8마디 끝의 마침·반종지 보너스, 직전 코드 반복 감점을 합산합니다.
+- 후보는 해당 조성의 다이어토닉 3화음과 7화음입니다. 점수는 직전 코드에서의 기능 화성 전이, 다음 코드로의 연결, 구간 멜로디와의 구성음 일치, 프로젝트 끝의 마침·반종지 보너스, 직전 코드 반복 감점을 합산합니다.
 - step 위치에 이미 코드가 있고 noteIds를 보내면 그 구성음은 멜로디 평가에서 제외합니다.
-- progressions는 조성에 맞춘 4코드 상용 진행 네 가지를 8마디(마디당 한 코드)로 펼친 목록입니다.
+- progressions는 조성에 맞춘 4코드 상용 진행 네 가지를 요청한 bars(기본 8)마디(마디당 한 코드)로 펼친 목록입니다.
 - analysis.romans는 현재 코드 각각의 로마 숫자 기능(조성 밖이면 null)이고, tips는 진행 전체에 대한 학습용 조언입니다. 각 팁은 { level: good | info | warn, text }이며 최대 6개입니다. 같은 코드 반복, 마침(으뜸·반종지·열린 끝), 딸림·버금딸림 기능 부재, V → IV 역행, 조성 밖 코드, 3화음만 사용, 마디당 코드 밀도, 센 박 멜로디와 코드의 충돌, I–V–vi–IV·ii–V–I 같은 상용 진행 감지를 다룹니다.
 - 추천 기호는 모두 프로젝트 검증이 허용하는 코드이며 음역 C4–C6 안에 들어갑니다. 전조, 세컨더리 도미넌트, 차용화음은 아직 제안하지 않습니다.
 
