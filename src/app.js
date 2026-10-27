@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
+import { AuthStore } from './auth.js';
 import { ProjectStore } from './store.js';
 import { ID, validateProject } from './project.js';
 import { parseSuggestRequest, suggestChords } from './harmony.js';
@@ -10,6 +11,8 @@ const http = (status, message) => Object.assign(new Error(message), { status });
 export async function createApp({ dataDir, token = '', origins = ['http://127.0.0.1:5173', 'http://localhost:5173'], maxBytes = 30 * 1024 * 1024 }) {
   const store = new ProjectStore(dataDir);
   await store.init();
+  const auth = new AuthStore(dataDir);
+  await auth.init();
   async function readJson(req, limit) {
     if (!req.headers['content-type']?.startsWith('application/json')) throw http(415, 'Use application/json.');
     if (Number(req.headers['content-length']) > limit) throw http(413, 'Request exceeds the upload limit.');
@@ -37,13 +40,26 @@ export async function createApp({ dataDir, token = '', origins = ['http://127.0.
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     if (req.method === 'OPTIONS') return send(204);
-    if (token) {
-      const actual = Buffer.from(req.headers.authorization || '');
-      const expected = Buffer.from(`Bearer ${token}`);
-      if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return send(401, { error: 'Authentication required.' });
-    }
     try {
       const path = new URL(req.url, 'http://localhost').pathname;
+      const bearer = req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : '';
+      const actual = Buffer.from(bearer);
+      const expected = Buffer.from(token);
+      const admin = !!token && actual.length === expected.length && timingSafeEqual(actual, expected);
+      if (path === '/api/auth/register') {
+        if (req.method !== 'POST') { res.setHeader('Allow', 'POST'); return send(405, { error: 'Method not allowed.' }); }
+        if (!token) return send(503, { error: 'Registration is not configured.' });
+        if (!admin) return send(401, { error: 'Administrator API token required.' });
+        return send(201, await auth.register(await readJson(req, 4096)));
+      }
+      if (path === '/api/auth/login') {
+        if (req.method !== 'POST') { res.setHeader('Allow', 'POST'); return send(405, { error: 'Method not allowed.' }); }
+        return send(200, await auth.login(await readJson(req, 4096), req.socket.remoteAddress));
+      }
+      const session = auth.session(bearer);
+      if (!admin && !session) return send(401, { error: 'Authentication required.' });
+      if (path === '/api/auth/session' && req.method === 'GET') return send(200, { authenticated: true, username: session?.username });
+      if (path === '/api/auth/logout' && req.method === 'POST') { auth.logout(bearer); return send(204); }
       if (path === '/api/health' && req.method === 'GET') return send(200, { status: 'ok', version: 1 });
       if (path === '/api/projects' && req.method === 'GET') return send(200, { projects: await store.list() });
       if (path === '/api/harmony/suggest' || path === '/api/harmony/review') {

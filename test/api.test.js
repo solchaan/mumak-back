@@ -14,10 +14,10 @@ function fixture() {
 }
 async function setup(t, options = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'mumak-api-'));
-  const app = await createApp({ dataDir: directory, ...options });
+  const app = await createApp({ dataDir: directory, token: 'test-default-token', ...options });
   app.listen(0, '127.0.0.1'); await once(app, 'listening');
   t.after(async () => { await new Promise(resolve => app.close(resolve)); await rm(directory, { recursive: true, force: true }); });
-  return { directory, request: (path, init) => fetch(`http://127.0.0.1:${app.address().port}/api${path}`, init) };
+  return { directory, request: (path, init) => fetch(`http://127.0.0.1:${app.address().port}/api${path}`, { ...init, headers: { ...(!('token' in options) ? { Authorization: 'Bearer test-default-token' } : {}), ...init?.headers } }) };
 }
 const put = (project, headers = {}) => ({ method: 'PUT', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(project) });
 
@@ -143,4 +143,52 @@ test('extended projects persist and harmony covers the new final bar', async t =
   const harmony = await response.json();
   assert.equal(harmony.progressions[0].chords.length, 9);
   assert.equal(harmony.progressions[0].chords.at(-1).step, 128);
+});
+
+test('session validation requires a valid token and unconfigured servers deny access', async t => {
+  const { request } = await setup(t, { token: 'login-test-token' });
+  for (const path of ['/auth/session', '/projects', '/harmony/suggest', '/harmony/review']) {
+    assert.equal((await request(path)).status, 401);
+    assert.equal((await request(path, { headers: { Authorization: 'Bearer incorrect' } })).status, 401);
+  }
+  const valid = await request('/auth/session', { headers: { Authorization: 'Bearer login-test-token' } });
+  assert.equal(valid.status, 200);
+  assert.deepEqual(await valid.json(), { authenticated: true });
+  const unconfigured = await setup(t, { token: '' });
+  assert.equal((await unconfigured.request('/auth/session')).status, 401);
+  assert.equal((await unconfigured.request('/projects')).status, 401);
+});
+
+test('admin registration, duplicate validation, password login and session revocation', async t => {
+  const { request, directory } = await setup(t, { token: 'admin-token' });
+  const body = { username: 'Test_User', password: 'a-long-test-password' };
+  const json = (data, token) => ({ method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(data) });
+  assert.equal((await request('/auth/register', json(body))).status, 401);
+  assert.equal((await request('/auth/register', json({ ...body, password: 'short' }, 'admin-token'))).status, 400);
+  const created = await request('/auth/register', json(body, 'admin-token'));
+  assert.equal(created.status, 201);
+  assert.equal((await created.json()).username, 'test_user');
+  const stored = await readFile(join(directory, 'users', 'test_user.json'), 'utf8');
+  assert.equal(stored.includes(body.password), false);
+  assert.equal((await request('/auth/register', json({ ...body, username: 'test_user' }, 'admin-token'))).status, 409);
+  assert.equal((await request('/auth/login', json({ ...body, password: 'wrong' }))).status, 401);
+  assert.equal((await request('/auth/login', json({ ...body, username: 'unknown' }))).status, 401);
+  const loggedIn = await request('/auth/login', json(body));
+  assert.equal(loggedIn.status, 200);
+  const session = await loggedIn.json();
+  assert.equal(typeof session.token, 'string');
+  const headers = { Authorization: `Bearer ${session.token}` };
+  assert.equal((await request('/auth/session', { headers })).status, 200);
+  assert.equal((await request('/projects', { headers })).status, 200);
+  assert.equal((await request('/auth/register', json({ ...body, username: 'another' }, session.token))).status, 401);
+  assert.equal((await request('/auth/logout', { method: 'POST', headers })).status, 204);
+  assert.equal((await request('/projects', { headers })).status, 401);
+});
+
+test('login throttles repeated failures and registration without admin configuration fails closed', async t => {
+  const { request } = await setup(t, { token: '' });
+  const init = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'unknown', password: 'invalid-password' }) };
+  assert.equal((await request('/auth/register', init)).status, 503);
+  for (let i = 0; i < 10; i++) assert.equal((await request('/auth/login', init)).status, 401);
+  assert.equal((await request('/auth/login', init)).status, 429);
 });

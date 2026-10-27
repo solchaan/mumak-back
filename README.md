@@ -23,9 +23,9 @@ npm run dev
 | PORT | 3001 | HTTP 포트 |
 | DATA_DIR | ./data | 프로젝트 저장 폴더 |
 | ALLOWED_ORIGINS | http://127.0.0.1:5173,http://localhost:5173 | 쉼표로 구분한 허용 출처 |
-| API_TOKEN | 빈 값 | 설정 시 모든 API에 Bearer 인증 적용 |
+| API_TOKEN | 빈 값 | 계정 등록 및 관리 API용 Bearer 토큰 |
 
-루프백 외부 인터페이스에서는 최소 32자 API 토큰이 필수입니다. 인터넷 배포 시 HTTPS 프록시, 정확한 CORS 출처, 데이터 볼륨·백업을 설정하세요. 현재 토큰은 서버 전체에 대한 단일 사용자 자격 증명입니다. 다중 사용자 계정과 프로젝트 소유권은 아직 없습니다.
+루프백 외부 인터페이스에서는 최소 32자 API 토큰이 필수입니다. 인터넷 배포 시 HTTPS 프록시, 정확한 CORS 출처, 데이터 볼륨·백업을 설정하세요. 계정은 회원가입 API로 생성합니다. 프로젝트 저장소는 공유되며 계정별 소유권은 아직 없습니다.
 
 ## API
 
@@ -38,7 +38,7 @@ npm run dev
 | DELETE | /api/projects/:id | 삭제, 204 |
 | POST | /api/harmony/suggest | 조성 추정과 다음 코드·코드 진행 추천 |
 
-PUT과 POST는 Content-Type: application/json이 필요합니다. API_TOKEN 설정 시 Authorization: Bearer <token>을 보내세요. 업데이트 시 서버가 updatedAt을 생성합니다. 동시 편집은 마지막 저장이 우선합니다.
+PUT과 POST는 Content-Type: application/json이 필요합니다. 보호된 API에는 로그인 응답의 토큰으로 Authorization: Bearer <token>을 보내세요. 업데이트 시 서버가 updatedAt을 생성합니다. 동시 편집은 마지막 저장이 우선합니다.
 
 프로젝트 형식 v1:
 
@@ -135,3 +135,38 @@ POST /api/harmony/suggest는 외부 서비스 없이 규칙 기반으로 다음 
 응답은 `key`, `summary`, `good`, `consider`, `alternatives`, `limitations`입니다. 관찰에는 `code`, `step`, `location`, `title`, `detail`, 선택적 `noteId`를 포함합니다. 대안의 `edit`는 `kind: note`(원래 음높이·위치·길이와 대상 ID, 새 음높이) 또는 `kind: chord`(위치, 이전·새 코드명)입니다. 관찰은 각 8개, 대안은 4개 이하로 제한합니다.
 
 규칙 기반이며 총점·확률·예술적 완성도 판정은 제공하지 않습니다. 코드 변화에 걸쳐 유지되는 음도 검사합니다. 다음 코드가 시작되면 이전 코드 구간은 종료된 것으로 해석합니다. 겹치는 음표에서는 성부를 추정하지 않고 단선율 분석을 생략합니다. 조표가 없으면 조성을 추정하며 녹음·보이싱·장르 평가는 지원하지 않습니다. 프론트는 평가 당시 스케치가 변경되면 재평가 후에만 대안을 적용합니다.
+
+## 로그인 및 접근 제한
+
+첫 진입은 아이디·비밀번호 로그인 화면입니다. 회원가입 화면은 제공하지 않습니다.
+`VITE_API_URL`에 백엔드 주소를 설정하며, 생략하면 동일 출처를 사용합니다.
+로그인 토큰은 브라우저 메모리에만 보관되어 새로고침하면 다시 로그인해야 합니다.
+세션은 8시간 후 만료되며 로그아웃 또는 서버 재시작 시 폐기됩니다.
+비인증 API 요청은 401로 차단됩니다. 기존 프로젝트 저장소는 공유 작업실 구조로, 계정별 데이터 분리는 지원하지 않습니다.
+
+### Postman으로 계정 생성
+
+- Method: `POST`
+- URL: `{{baseUrl}}/api/auth/register`
+- Authorization: Bearer Token → 서버 환경 변수 `API_TOKEN` 값 (관리자용)
+- Header: `Content-Type: application/json`
+- Body → raw → JSON:
+
+```json
+{
+  "username": "mumakuser",
+  "password": "replace-with-your-password"
+}
+```
+
+아이디는 영문·숫자·밑줄·하이픈 3~64자이고 대소문자를 구분하지 않습니다.
+비밀번호는 12~128자입니다. 성공은 `201`과 `{ "username", "createdAt" }`,
+중복 아이디는 `409`, 잘못된 입력은 `400`, 관리자 토큰 누락·불일치는 `401`입니다.
+`API_TOKEN` 미설정 시 회원가입은 `503`으로 거부됩니다.
+계정은 `DATA_DIR/users`에 scrypt 해시와 개별 salt로 저장됩니다.
+`API_TOKEN`은 관리자용으로만 사용하고 `VITE_` 환경 변수에 넣지 마세요.
+
+`POST /api/auth/login`에 동일한 JSON을 보내면 `{ "token", "username", "expiresAt" }`을 반환합니다.
+나머지 API는 `Authorization: Bearer <token>`으로 호출합니다.
+`GET /api/auth/session`은 인증 확인, `POST /api/auth/logout`은 해당 세션 폐기입니다.
+로그인 실패가 동일 IP에서 1분에 10회 누적되면 `429`를 반환합니다.
